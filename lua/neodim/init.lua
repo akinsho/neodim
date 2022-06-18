@@ -1,4 +1,5 @@
 local util = require("neodim.util")
+local filter_unused = require("neodim.filter").filter_unused
 local results = {}
 
 setmetatable(results, { __mode = "v" }) -- make values weak
@@ -54,33 +55,7 @@ dim.create_diagnostic_extmark = function (bufnr, ns, diagnostic)
   })
 end
 
-local is_unused = function(diagnostic)
-  local diag_info = diagnostic.tags or vim.tbl_get(diagnostic, "user_data", "lsp", "tags") or diagnostic.code
-  if type(diag_info) == "table" then
-    return diag_info and vim.tbl_contains(diag_info, vim.lsp.protocol.DiagnosticTag.Unnecessary)
-  elseif type(diag_info) == "string" then
-    return string.find(diag_info, ".*[uU]nused.*") ~= nil
-  end
-end
-
-local detect_unused = function(diagnostics)
-  local is_list = vim.tbl_islist(diagnostics)
-  return is_list and vim.tbl_filter(is_unused, diagnostics) or is_unused(diagnostics) or {}
-end
-
 -- returns a list of all non-unused if invert is false, or all unused decorations if invert is true
-local filter_unused = function (diagnostics, invert)
-  local is_used = function(d)
-    local unused = vim.tbl_islist(d) and not detect_unused(d) or not is_unused(d)
-    return unused and d.message or nil
-  end
-
-  return vim.tbl_filter(function(d)
-    if invert then return not is_used(d) end
-    return is_used(d)
-  end, diagnostics)
-end
-
 local create_handler = function (old_handler)
   return {
     show = function (namespace, bufnr, diagnostics, opts)
@@ -132,7 +107,7 @@ dim.create_dim_handler = function (namespace)
     end, get_missing_diag(diagnostics, marks))
   end
 
-  local refresh = function (bufnr)
+  local refresh = function (bufnr, diagnostics)
     for _, m in ipairs(vim.api.nvim_buf_get_extmarks(0, namespace, 0, -1, {})
 ) do
       local d_lnum = filter_unused(vim.diagnostic.get(bufnr, {lnum=m[2]}), true)
@@ -141,17 +116,16 @@ dim.create_dim_handler = function (namespace)
         vim.api.nvim_buf_clear_namespace(bufnr, namespace, m[2], m[2]+1)
       end
     end
-    local marks = vim.api.nvim_buf_get_extmarks(0, namespace, 0, -1, {})
   end
 
-  local show = function(_, bufnr, diagnostics, _)
-    local marks = refresh(bufnr)
-    diagnostics = filter_unused(vim.diagnostic.get(bufnr, {}), true)
-    add_new_marks(diagnostics, marks)
-  end
+  local show = vim.schedule_wrap(function(_, bufnr, diagnostics, _)
+    refresh(bufnr, diagnostics)
+    for _, d in ipairs(diagnostics) do
+      dim.create_diagnostic_extmark(d.bufnr, namespace, d)
+    end
+  end)
 
   local hide = function(_, bufnr, diagnostics, _)
-    refresh(bufnr)
   end
   -- dont need a hide function
   return { show = show, hide = hide}
@@ -160,9 +134,12 @@ end
 dim.setup = function(params)
   local defaults = { hide = { underline = true, virtual_text = true, signs = true } }
   params = vim.tbl_deep_extend("force", defaults, params or {})
+  -- require("neodim.override_handler")
   hide_unused_decorations(params.hide)
-
   dim.ns = vim.api.nvim_create_namespace("dim")
+  dim.diag_ns = vim.api.nvim_create_namespace("dim_diag")
+  -- print(dim.diag_ns)
+  -- vim.diagnostic.set(dim.ns, 0, filter_unused(diagnostics, true)
   vim.diagnostic.handlers["dim/unused"] = dim.create_dim_handler(dim.ns)
 end
 
